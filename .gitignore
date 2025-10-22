@@ -1,0 +1,21 @@
+# Environment variables with sensitive data
+.env
+.env.backup
+
+# Docker volumes
+volumes/
+
+# Backup files
+*.backup
+*.bak
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

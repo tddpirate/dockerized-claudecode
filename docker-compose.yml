@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  claude-code:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: claude-code-sandbox
+    # Interactive terminal
+    stdin_open: true
+    tty: true
+    # Mount your project directory (will be set via .env file)
+    volumes:
+      - ${PROJECT_DIR}:/workspace
+      # Optional: Mount Claude settings for persistence
+      - claude-settings:/root/.claude
+    working_dir: /workspace
+    environment:
+      # Set your API key or use OAuth
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Optional: Specify model
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-4-5-20250929}
+      # Disable auto-updates in container
+      - DISABLE_AUTOUPDATER=1
+    # Port forwarding for OAuth callback (required for browser authentication)
+    ports:
+      - "8338:8338"
+    # Network isolation option (uncomment for maximum security - disables OAuth)
+    # network_mode: none
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    # Resource limits (optional but recommended)
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          memory: 1G
+
+volumes:
+  claude-settings:
+    driver: local
