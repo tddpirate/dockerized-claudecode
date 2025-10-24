@@ -23,6 +23,15 @@ resolve_path() {
     fi
 }
 
+# Get current user's UID and GID
+CURRENT_UID=$(id -u)
+CURRENT_GID=$(id -g)
+CURRENT_USER=$(whoami)
+
+echo -e "${GREEN}Detected host user: $CURRENT_USER (UID=$CURRENT_UID, GID=$CURRENT_GID)${NC}"
+echo -e "${GREEN}Container will run as this user to preserve file ownership${NC}"
+echo ""
+
 # Prompt for project directory
 echo -e "${YELLOW}Enter the full path to your project directory:${NC}"
 read -e -p "Project path: " PROJECT_PATH
@@ -48,10 +57,15 @@ if [ -f .env ]; then
     cp .env .env.backup
 fi
 
-# Create .env file
+# Create .env file with user IDs
 cat > .env << EOF
 # Project directory to mount in container
 PROJECT_DIR=$PROJECT_PATH
+
+# Host user/group IDs (to preserve file ownership)
+USER_ID=$CURRENT_UID
+GROUP_ID=$CURRENT_GID
+USERNAME=claudeuser
 
 # Anthropic API Key (optional - leave empty to use OAuth during container session)
 # Get your API key from: https://console.anthropic.com/
@@ -61,7 +75,7 @@ ANTHROPIC_API_KEY=
 ANTHROPIC_MODEL=claude-sonnet-4-5-20250929
 EOF
 
-echo -e "${GREEN}✓ Created .env file with your project directory${NC}"
+echo -e "${GREEN}✓ Created .env file with your project directory and user IDs${NC}"
 echo ""
 
 # Prompt for API key (optional)
@@ -89,7 +103,7 @@ echo -e "${BLUE}Building Docker image...${NC}"
 echo -e "${BLUE}================================${NC}"
 echo ""
 
-# Build the Docker image
+# Build the Docker image with user IDs
 docker-compose build
 
 if [ $? -ne 0 ]; then
@@ -122,6 +136,9 @@ echo -e "${BLUE}Entering container shell...${NC}"
 echo -e "${BLUE}================================${NC}"
 echo ""
 echo -e "${YELLOW}Your project is mounted at: /workspace${NC}"
+echo -e "${YELLOW}Container user: $CURRENT_USER (UID=$CURRENT_UID, GID=$CURRENT_GID)${NC}"
+echo -e "${YELLOW}Files created will be owned by your host user!${NC}"
+echo ""
 echo -e "${YELLOW}To start Claude Code, simply run: ${GREEN}claude${NC}"
 echo ""
 echo -e "${YELLOW}First-time setup:${NC}"
