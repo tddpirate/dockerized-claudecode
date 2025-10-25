@@ -5,32 +5,60 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Pass host user/group IDs to match file ownership
+        # These are set in .env file (auto-detected by setup-and-run.sh)
+        USER_ID: ${USER_ID:-1000}
+        GROUP_ID: ${GROUP_ID:-1000}
+        USERNAME: ${USERNAME:-claudeuser}
     container_name: claude-code-sandbox
+    
     # Interactive terminal
     stdin_open: true
     tty: true
-    # Mount your project directory (will be set via .env file)
-    volumes:
-      - ${PROJECT_DIR}:/workspace
-      # Optional: Mount Claude settings for persistence
-      - claude-settings:/root/.claude
-    working_dir: /workspace
-    environment:
-      # Set your API key or use OAuth
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      # Optional: Specify model
-      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-4-5-20250929}
-      # Disable auto-updates in container
-      - DISABLE_AUTOUPDATER=1
-    # Port forwarding for OAuth callback (required for browser authentication)
+    
+    # Port forwarding for OAuth callback
+    # When you authenticate via browser on host, callback goes to localhost:8338
+    # which is forwarded to the container
     ports:
       - "8338:8338"
-    # Network isolation option (uncomment for maximum security - disables OAuth)
-    # network_mode: none
+    
+    # Volume mounts
+    volumes:
+      # Mount your project directory (set in .env file)
+      # Files created here will be owned by your host user (same UID/GID)
+      - ${PROJECT_DIR}:/workspace
+      
+      # Persist Claude Code settings and OAuth tokens
+      # Stored in non-root user's home directory
+      - claude-settings:/home/${USERNAME:-claudeuser}/.claude
+    
+    working_dir: /workspace
+    
+    # Run container as host user (not root) to preserve file ownership
+    # This ensures files created by Claude Code are owned by your host user
+    user: "${USER_ID:-1000}:${GROUP_ID:-1000}"
+    
+    # Environment variables
+    environment:
+      # Anthropic API key (optional - leave empty to use OAuth)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      
+      # Claude model to use
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-4-5-20250929}
+      
+      # Disable auto-updates in container (recommended for reproducibility)
+      - DISABLE_AUTOUPDATER=1
+      
+      # Set HOME to non-root user's home directory
+      # This ensures Claude Code stores settings in the correct location
+      - HOME=/home/${USERNAME:-claudeuser}
+    
     # Security options
     security_opt:
       - no-new-privileges:true
-    # Resource limits (optional but recommended)
+    
+    # Resource limits (adjust based on your needs)
     deploy:
       resources:
         limits:
@@ -38,7 +66,13 @@ services:
           memory: 4G
         reservations:
           memory: 1G
+    
+    # Network configuration
+    # Note: Comment out 'ports' and uncomment 'network_mode: none' below
+    # for complete network isolation (disables OAuth but maximum security)
+    # network_mode: none
 
+# Named volume for persisting Claude Code settings
 volumes:
   claude-settings:
     driver: local
