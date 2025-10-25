@@ -29,9 +29,10 @@ services:
       # Files created here will be owned by your host user (same UID/GID)
       - ${PROJECT_DIR}:/workspace
       
-      # Persist Claude Code settings and OAuth tokens
-      # Stored in non-root user's home directory
-      - claude-settings:/home/${USERNAME:-claudeuser}/.claude
+      # Persist Claude Code settings and OAuth tokens per-project
+      # Each project has isolated settings in its own subdirectory
+      # Stored in: /home/claudeuser/.claude/<PROJECT_NAME>
+      - claude-settings-${PROJECT_NAME:-default}:/home/${USERNAME:-claudeuser}/.claude/${PROJECT_NAME:-default}
     
     working_dir: /workspace
     
@@ -72,7 +73,9 @@ services:
     # for complete network isolation (disables OAuth but maximum security)
     # network_mode: none
 
-# Named volume for persisting Claude Code settings
+# Named volumes for persisting Claude Code settings
+# Each project gets its own volume: claude-settings-<PROJECT_NAME>
+# This allows multiple projects to have isolated Claude Code configurations
 volumes:
-  claude-settings:
+  claude-settings-${PROJECT_NAME:-default}:
     driver: local

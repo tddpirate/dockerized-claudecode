@@ -51,6 +51,30 @@ fi
 echo -e "${GREEN}✓ Project directory found: $PROJECT_PATH${NC}"
 echo ""
 
+# Extract default project name from path (last directory component)
+DEFAULT_PROJNAME=$(basename "$PROJECT_PATH")
+
+# Prompt for project name (for Claude settings isolation)
+echo -e "${YELLOW}Enter a project name for Claude Code settings isolation:${NC}"
+echo -e "${YELLOW}This will store settings in /home/claudeuser/.claude/${NC}${GREEN}<projname>${NC}"
+echo -e "${YELLOW}Project name must be a valid directory name (no spaces, slashes, etc.)${NC}"
+read -e -p "Project name [${DEFAULT_PROJNAME}]: " PROJECT_NAME
+
+# Use default if empty
+if [ -z "$PROJECT_NAME" ]; then
+    PROJECT_NAME="$DEFAULT_PROJNAME"
+fi
+
+# Validate project name (basic check for valid directory name)
+if [[ ! "$PROJECT_NAME" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    echo -e "${RED}Error: Invalid project name. Use only letters, numbers, dots, hyphens, and underscores.${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✓ Project name: $PROJECT_NAME${NC}"
+echo -e "${GREEN}✓ Claude settings will be stored in: /home/claudeuser/.claude/$PROJECT_NAME${NC}"
+echo ""
+
 # Check if .env file exists
 if [ -f .env ]; then
     echo -e "${YELLOW}Found existing .env file. Backing it up to .env.backup${NC}"
@@ -61,6 +85,10 @@ fi
 cat > .env << EOF
 # Project directory to mount in container
 PROJECT_DIR=$PROJECT_PATH
+
+# Project name for Claude settings isolation
+# Settings stored in: /home/claudeuser/.claude/$PROJECT_NAME
+PROJECT_NAME=$PROJECT_NAME
 
 # Host user/group IDs (to preserve file ownership)
 USER_ID=$CURRENT_UID
@@ -75,7 +103,7 @@ ANTHROPIC_API_KEY=
 ANTHROPIC_MODEL=claude-sonnet-4-5-20250929
 EOF
 
-echo -e "${GREEN}✓ Created .env file with your project directory and user IDs${NC}"
+echo -e "${GREEN}✓ Created .env file with project configuration${NC}"
 echo ""
 
 # Prompt for API key (optional)
@@ -138,6 +166,7 @@ echo ""
 echo -e "${YELLOW}Your project is mounted at: /workspace${NC}"
 echo -e "${YELLOW}Container user: $CURRENT_USER (UID=$CURRENT_UID, GID=$CURRENT_GID)${NC}"
 echo -e "${YELLOW}Files created will be owned by your host user!${NC}"
+echo -e "${YELLOW}Claude settings: /home/claudeuser/.claude/$PROJECT_NAME${NC}"
 echo ""
 echo -e "${YELLOW}To start Claude Code, simply run: ${GREEN}claude${NC}"
 echo ""

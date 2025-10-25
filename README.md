@@ -25,11 +25,12 @@ chmod +x setup-and-run.sh
 The script will:
 - ✅ Detect your host user ID (UID) and group ID (GID) automatically
 - ✅ Prompt you for your project directory
-- ✅ Validate the directory exists
-- ✅ Create the `.env` configuration file with your user IDs
+- ✅ Prompt you for a project name (for settings isolation)
+- ✅ Validate the directory exists and project name is valid
+- ✅ Create the `.env` configuration file with your user IDs and project name
 - ✅ Optionally save your API key
 - ✅ Build the Docker image with matching user/group
-- ✅ Start the container
+- ✅ Start the container with isolated Claude settings
 - ✅ Drop you into an interactive shell
 
 3. Inside the container, start Claude Code:
@@ -42,6 +43,7 @@ claude
 1. Create a `.env` file:
 ```bash
 PROJECT_DIR=/absolute/path/to/your/project
+PROJECT_NAME=myproject
 USER_ID=1000
 GROUP_ID=1000
 USERNAME=claudeuser
@@ -49,10 +51,11 @@ ANTHROPIC_API_KEY=your-api-key-here
 ANTHROPIC_MODEL=claude-sonnet-4-5-20250929
 ```
 
-**Important:** Get your actual user IDs:
+**Important:** Get your actual user IDs and choose a project name:
 ```bash
 id -u  # Your USER_ID
 id -g  # Your GROUP_ID
+basename /path/to/your/project  # Suggested PROJECT_NAME
 ```
 
 2. Build and start the container:
@@ -74,6 +77,24 @@ claude
 - Claude Code **cannot** access files outside this directory on your host
 - Host system files (like `~/.ssh`, `~/.aws`) are **not** accessible
 - Perfect for working on untrusted or experimental code
+
+### Per-Project Settings Isolation
+- Each project has its own Claude Code settings and authentication
+- Settings stored in: `/home/claudeuser/.claude/<PROJECT_NAME>`
+- Different projects can use different Claude accounts or API keys
+- Prevents configuration conflicts between projects
+- Easy to reset settings for a specific project without affecting others
+
+**Example:**
+```bash
+# Project A uses OAuth with Claude Pro
+PROJECT_NAME=projectA
+
+# Project B uses API key
+PROJECT_NAME=projectB
+
+# Each has separate settings, tokens, and configurations
+```
 
 ### File Ownership Preservation
 - **Container runs as your host user** (same UID/GID)
@@ -151,39 +172,61 @@ docker-compose up -d
 
 ## 📁 Working with Multiple Projects
 
-To switch to a different project:
+Each project gets its own isolated Claude Code settings. This allows you to:
+- Use different Claude accounts for different projects
+- Have different permission configurations per project
+- Keep project-specific authentication tokens separate
+
+### Switching to a Different Project
 
 1. Stop the current container:
 ```bash
 docker-compose down
 ```
 
-2. Update the `.env` file with the new project path:
+2. Update the `.env` file with the new project:
 ```bash
 PROJECT_DIR=/path/to/different/project
+PROJECT_NAME=different-project  # Different name = different settings
 # USER_ID and GROUP_ID remain the same
 ```
 
-3. Start the container again:
+3. Start the container:
 ```bash
 docker-compose up -d
 docker-compose exec claude-code bash
 ```
 
-**Alternative:** Run the setup script again to interactively choose a new project.
+**Alternative:** Run the setup script again to interactively choose a new project. The script will automatically suggest a project name based on the directory path.
+
+### Reusing Settings Across Projects
+
+If you want multiple projects to **share** the same Claude Code settings:
+
+```bash
+# In .env for both projects, use the same PROJECT_NAME
+PROJECT_NAME=shared-config
+```
+
+Both projects will use the same OAuth tokens, permissions, and configuration.
 
 ## ⚙️ Configuration
 
 ### Environment Variables (.env file)
 
 - **PROJECT_DIR**: Absolute path to your project directory (required)
+- **PROJECT_NAME**: Unique name for this project's Claude settings (required)
+  - Must be a valid directory name (letters, numbers, dots, hyphens, underscores only)
+  - Default: Last directory name from PROJECT_DIR
+  - Used to isolate Claude Code settings per-project
+  - Example: `myapp`, `client-project`, `experiment_1`
 - **USER_ID**: Your host user ID - auto-detected by setup script (required)
 - **GROUP_ID**: Your host group ID - auto-detected by setup script (required)
 - **USERNAME**: Container username, default is `claudeuser` (required)
 - **ANTHROPIC_API_KEY**: Your Anthropic API key (optional if using OAuth)
 - **ANTHROPIC_MODEL**: Claude model to use (default: claude-sonnet-4-5-20250929)
 
-### Getting Your User IDs
+### Getting Your User IDs and Project Name
 
 The setup script automatically detects these, but if setting up manually:
 
@@ -199,14 +242,28 @@ id -g
 # Find your username
 whoami
 # Output: john (example)
+
+# Suggested project name (from your project path)
+basename /path/to/your/yourproject
+# Output: yourproject (example)
 ```
+
+**Project Name Rules:**
+- Only letters (a-z, A-Z), numbers (0-9), dots (.), hyphens (-), and underscores (_)
+- No spaces, slashes, or special characters
+- Should be descriptive and unique per project
+- Examples: `webapp`, `client-site`, `ml_experiment`, `project-2024`
 
 ### Claude Code Settings
 
-Settings are persisted in a Docker volume (`claude-settings`). To configure permissions:
+Settings are persisted in Docker volumes, one per project. To configure permissions:
 
-1. Inside the container, create `~/.claude/settings.json`:
-```json
+1. Inside the container, create `~/.claude/<PROJECT_NAME>/settings.json`:
+
+```bash
+# Inside container
+mkdir -p ~/.claude/$PROJECT_NAME
+cat > ~/.claude/$PROJECT_NAME/settings.json << 'EOF'
 {
   "permissions": {
     "deny": [
@@ -220,6 +277,7 @@ Settings are persisted in a Docker volume (`claude-settings`). To configure perm
     ]
   }
 }
+EOF
 ```
 
 2. Or use the interactive command:
@@ -227,6 +285,8 @@ Settings are persisted in a Docker volume (`claude-settings`). To configure perm
 claude
 /permissions
 ```
+
+**Note:** Settings are stored per-project in `/home/claudeuser/.claude/<PROJECT_NAME>/`, so each project can have different permission configurations.
 
 ## 🔧 Authentication
 
@@ -238,10 +298,7 @@ claude
 
 **Steps:**
 
-1. Leave `ANTHROPIC_API_KEY` empty in your `.env` file:
-```bash
-ANTHROPIC_API_KEY=
-```
+1. Leave `ANTHROPIC_API_KEY` empty in your `.env` file
 
 2. Start the container and run Claude Code:
 ```bash
@@ -250,19 +307,9 @@ docker-compose exec claude-code bash
 claude
 ```
 
-3. When prompted, select option 2 (Claude App OAuth)
+3. Follow the OAuth flow (see [OAuth Setup Guide](OAuth%20Setup%20Guide.md))
 
-4. Copy the URL displayed in terminal
-
-5. Paste the URL in your **host browser** (outside Docker)
-
-6. Sign in with your Claude Pro/Max account and authorize
-
-7. The callback will be received via port 8338, completing authentication
-
-**Note:** Authentication is saved in the `claude-settings` volume and persists across container restarts.
-
-See [OAuth Setup Guide](OAuth%20Setup%20Guide.md) for detailed instructions.
+**Note:** OAuth tokens are saved per-project in the `claude-settings-<PROJECT_NAME>` volume. Each project can authenticate with a different Claude account if needed.
 
 ### Option 2: API Key
 
@@ -346,6 +393,11 @@ docker-compose build --no-cache
 docker-compose up -d
 ```
 
+**Note:** Using `-v` flag removes volumes including Claude settings for ALL projects. To remove only current project's settings:
+```bash
+docker volume rm claude-code_claude-settings-${PROJECT_NAME}
+```
+
 ### Claude Code authentication fails
 1. For OAuth: Ensure port 8338 is not blocked and you complete the browser flow
 2. For API key: Verify your key is correct at https://console.anthropic.com/
@@ -386,13 +438,15 @@ docker-compose build --no-cache 2>&1 | tee build.log
 ## 📝 Best Practices
 
 1. **Always use Git** in your project directory for easy rollback
-2. **Review changes** before committing Claude Code's modifications
-3. **Start with plan mode** to understand what Claude wants to do
-4. **Set permission denials** for sensitive files in settings.json
-5. **Limit resources** appropriately in docker-compose.yml
-6. **Regular backups** of your project directory
-7. **Use the setup script** to ensure correct UID/GID mapping
-8. **Test file ownership** after first use to verify setup is correct
+2. **Use descriptive project names** - makes it clear which settings belong to which project
+3. **Review changes** before committing Claude Code's modifications
+4. **Start with plan mode** to understand what Claude wants to do
+5. **Set permission denials** for sensitive files in settings.json (per-project)
+6. **Limit resources** appropriately in docker-compose.yml
+7. **Regular backups** of your project directory
+8. **Use the setup script** to ensure correct UID/GID mapping and project name
+9. **Test file ownership** after first use to verify setup is correct
+10. **Separate projects = separate settings** - use different PROJECT_NAME values
 
 ## 💰 Cost Considerations
 
