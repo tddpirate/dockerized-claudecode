@@ -11,7 +11,7 @@ services:
         USER_ID: ${USER_ID:-1000}
         GROUP_ID: ${GROUP_ID:-1000}
         USERNAME: ${USERNAME:-claudeuser}
-    container_name: claude-code-sandbox
+    container_name: claude-code-sandbox-${PROJECT_NAME:-default}
     
     # Interactive terminal
     stdin_open: true
@@ -31,8 +31,9 @@ services:
       
       # Persist Claude Code settings and OAuth tokens per-project
       # Each project has isolated settings in its own subdirectory
+      # The volume name includes PROJECT_NAME for isolation
       # Stored in: /home/claudeuser/.claude/<PROJECT_NAME>
-      - claude-settings-${PROJECT_NAME:-default}:/home/${USERNAME:-claudeuser}/.claude/${PROJECT_NAME:-default}
+      - claude-settings:/home/${USERNAME:-claudeuser}/.claude/${PROJECT_NAME:-default}
     
     working_dir: /workspace
     
@@ -73,9 +74,10 @@ services:
     # for complete network isolation (disables OAuth but maximum security)
     # network_mode: none
 
-# Named volumes for persisting Claude Code settings
-# Each project gets its own volume: claude-settings-<PROJECT_NAME>
-# This allows multiple projects to have isolated Claude Code configurations
+# Named volume for persisting Claude Code settings
+# Per-project isolation is achieved through subdirectories within this volume
+# Each PROJECT_NAME gets its own subdirectory: /home/claudeuser/.claude/<PROJECT_NAME>
+# This allows multiple projects to maintain separate settings using a single volume
 volumes:
-  claude-settings-${PROJECT_NAME:-default}:
+  claude-settings:
     driver: local
