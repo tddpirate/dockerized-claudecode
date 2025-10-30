@@ -23,6 +23,25 @@ resolve_path() {
     fi
 }
 
+# Function to create Docker volume if it doesn't exist
+create_volume_if_needed() {
+    local volume_name=$1
+    local description=$2
+
+    if docker volume inspect "$volume_name" >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ Volume already exists: $volume_name${NC}"
+    else
+        echo -e "${YELLOW}Creating volume: $volume_name ($description)${NC}"
+        docker volume create "$volume_name"
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}✓ Created volume: $volume_name${NC}"
+        else
+            echo -e "${RED}Error: Failed to create volume: $volume_name${NC}"
+            return 1
+        fi
+    fi
+}
+
 # Get current user's UID and GID
 CURRENT_UID=$(id -u)
 CURRENT_GID=$(id -g)
@@ -56,7 +75,8 @@ DEFAULT_PROJNAME=$(basename "$PROJECT_PATH")
 
 # Prompt for project name (for Claude settings isolation)
 echo -e "${YELLOW}Enter a project name for Claude Code settings isolation:${NC}"
-echo -e "${YELLOW}This will store settings in /home/claudeuser/.claude/${NC}${GREEN}<projname>${NC}"
+echo -e "${YELLOW}This will create a separate volume for this project's settings/history${NC}"
+echo -e "${YELLOW}OAuth credentials are shared across all projects (authenticate once)${NC}"
 echo -e "${YELLOW}Project name must be a valid directory name (no spaces, slashes, etc.)${NC}"
 read -e -p "Project name [${DEFAULT_PROJNAME}]: " PROJECT_NAME
 
@@ -72,7 +92,30 @@ if [[ ! "$PROJECT_NAME" =~ ^[a-zA-Z0-9._-]+$ ]]; then
 fi
 
 echo -e "${GREEN}✓ Project name: $PROJECT_NAME${NC}"
-echo -e "${GREEN}✓ Claude settings will be stored in: /home/claudeuser/.claude/$PROJECT_NAME${NC}"
+echo -e "${GREEN}✓ Project settings volume: claude-settings-$PROJECT_NAME${NC}"
+echo -e "${GREEN}✓ Shared credentials volume: claude-credentials (used by all projects)${NC}"
+echo ""
+
+# Create Docker volumes
+echo -e "${BLUE}================================${NC}"
+echo -e "${BLUE}Creating Docker Volumes...${NC}"
+echo -e "${BLUE}================================${NC}"
+echo ""
+
+# Create shared credentials volume (one-time, shared across all projects)
+create_volume_if_needed "claude-credentials" "shared OAuth credentials"
+if [ $? -ne 0 ]; then
+    exit 1
+fi
+
+# Create per-project settings volume
+create_volume_if_needed "claude-settings-$PROJECT_NAME" "project-specific settings"
+if [ $? -ne 0 ]; then
+    exit 1
+fi
+
+echo ""
+echo -e "${GREEN}✓ All volumes ready${NC}"
 echo ""
 
 # Check if .env file exists
@@ -87,13 +130,14 @@ cat > .env << EOF
 PROJECT_DIR=$PROJECT_PATH
 
 # Project name for Claude settings isolation
-# Settings stored in: /home/claudeuser/.claude/$PROJECT_NAME
+# Creates a dedicated volume: claude-settings-$PROJECT_NAME
+# Credentials are shared across all projects via claude-credentials volume
 PROJECT_NAME=$PROJECT_NAME
 
 # Host user/group IDs (to preserve file ownership)
 USER_ID=$CURRENT_UID
 GROUP_ID=$CURRENT_GID
-USERNAME=claudeuser
+USERNAME=node
 
 # Anthropic API Key (optional - leave empty to use OAuth during container session)
 # Get your API key from: https://console.anthropic.com/
@@ -147,8 +191,8 @@ echo -e "${BLUE}Starting Claude Code container...${NC}"
 echo -e "${BLUE}================================${NC}"
 echo ""
 
-# Start the container
-docker-compose up -d
+# Start the container in OAuth mode (port 8338:8338 for OAuth callback)
+OAUTH_MODE=":8338" docker-compose up -d
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}Error: Failed to start container${NC}"
@@ -164,9 +208,12 @@ echo -e "${BLUE}Entering container shell...${NC}"
 echo -e "${BLUE}================================${NC}"
 echo ""
 echo -e "${YELLOW}Your project is mounted at: /workspace${NC}"
-echo -e "${YELLOW}Container user: $CURRENT_USER (UID=$CURRENT_UID, GID=$CURRENT_GID)${NC}"
+echo -e "${YELLOW}Container user: node (UID=$CURRENT_UID, GID=$CURRENT_GID)${NC}"
 echo -e "${YELLOW}Files created will be owned by your host user!${NC}"
-echo -e "${YELLOW}Claude settings: /home/claudeuser/.claude/$PROJECT_NAME${NC}"
+echo ""
+echo -e "${YELLOW}Claude Code settings:${NC}"
+echo -e "${YELLOW}  • Credentials (shared): /home/node/.claude-shared/${NC}"
+echo -e "${YELLOW}  • Project settings: /home/node/.claude/${NC}"
 echo ""
 echo -e "${YELLOW}To start Claude Code, simply run: ${GREEN}claude${NC}"
 echo ""
@@ -183,3 +230,51 @@ read -p "Press Enter to continue..."
 
 # Attach to the container
 docker-compose exec claude-code bash
+
+# After user exits the container, offer to restart in non-OAuth mode
+echo ""
+echo -e "${BLUE}================================${NC}"
+echo -e "${BLUE}OAuth Setup Complete${NC}"
+echo -e "${BLUE}================================${NC}"
+echo ""
+echo -e "${YELLOW}The container is currently running in OAuth mode (port 8338:8338 exposed).${NC}"
+echo -e "${YELLOW}For normal use, you should restart the container without OAuth mode.${NC}"
+echo -e "${YELLOW}This will use a random host port and allow multiple projects to run simultaneously.${NC}"
+echo ""
+read -p "Do you want to restart the container in non-OAuth mode now? (Y/n): " -n 1 -r
+echo ""
+echo ""
+
+if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+    echo -e "${YELLOW}Stopping container...${NC}"
+    docker-compose down
+
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Error: Failed to stop container${NC}"
+        exit 1
+    fi
+
+    echo -e "${YELLOW}Starting container in non-OAuth mode (random port)...${NC}"
+    OAUTH_MODE="" docker-compose up -d
+
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Error: Failed to start container${NC}"
+        exit 1
+    fi
+
+    echo ""
+    echo -e "${GREEN}✓ Container restarted in non-OAuth mode${NC}"
+    echo -e "${GREEN}✓ You can now run multiple projects simultaneously without port conflicts${NC}"
+    echo ""
+    echo -e "${YELLOW}To re-enter the container: ${GREEN}docker-compose exec claude-code bash${NC}"
+    echo -e "${YELLOW}To start Claude Code: ${GREEN}claude${NC}"
+else
+    echo -e "${YELLOW}Container is still in OAuth mode (port 8338:8338).${NC}"
+    echo -e "${YELLOW}To switch to non-OAuth mode later, run:${NC}"
+    echo -e "${GREEN}  docker-compose down && docker-compose up -d${NC}"
+    echo ""
+    echo -e "${YELLOW}To re-enter the container: ${GREEN}docker-compose exec claude-code bash${NC}"
+fi
+
+echo ""
+echo -e "${GREEN}Setup complete! Happy coding with Claude!${NC}"

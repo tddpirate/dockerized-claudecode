@@ -26,31 +26,46 @@ RUN npm install -g @anthropic-ai/claude-code
 # The UID and GID will be set at runtime via build args
 ARG USER_ID=1000
 ARG GROUP_ID=1000
-ARG USERNAME=claudeuser
+ARG USERNAME=node
 
-# Create group and user with specified IDs
-# Handle cases where GID/UID might already exist in base image
+# Detect if user already exists with the target UID
+# The node:20-alpine base image already has a 'node' user with UID 1000
+# We'll reuse it instead of creating conflicts
 RUN set -eux; \
+    ACTUAL_USER=""; \
     ACTUAL_GROUP=""; \
-    if getent group ${GROUP_ID} >/dev/null 2>&1; then \
-        ACTUAL_GROUP=$(getent group ${GROUP_ID} | cut -d: -f1); \
-        echo "Group ${GROUP_ID} already exists as ${ACTUAL_GROUP}"; \
-    else \
-        addgroup -g ${GROUP_ID} ${USERNAME}; \
-        ACTUAL_GROUP=${USERNAME}; \
-        echo "Created group ${USERNAME} with GID ${GROUP_ID}"; \
-    fi; \
+    \
+    # Check if the target UID already exists
     if getent passwd ${USER_ID} >/dev/null 2>&1; then \
-        EXISTING_USER=$(getent passwd ${USER_ID} | cut -d: -f1); \
-        echo "User ${USER_ID} already exists as ${EXISTING_USER}"; \
+        ACTUAL_USER=$(getent passwd ${USER_ID} | cut -d: -f1); \
+        echo "✓ User ${USER_ID} already exists as '${ACTUAL_USER}' - using existing user"; \
+        # Get the user's primary group
+        ACTUAL_GROUP=$(id -gn ${ACTUAL_USER}); \
     else \
+        echo "Creating new user '${USERNAME}' with UID ${USER_ID}"; \
+        # Create group if needed
+        if getent group ${GROUP_ID} >/dev/null 2>&1; then \
+            ACTUAL_GROUP=$(getent group ${GROUP_ID} | cut -d: -f1); \
+            echo "Group ${GROUP_ID} already exists as ${ACTUAL_GROUP}"; \
+        else \
+            addgroup -g ${GROUP_ID} ${USERNAME}; \
+            ACTUAL_GROUP=${USERNAME}; \
+            echo "Created group ${USERNAME} with GID ${GROUP_ID}"; \
+        fi; \
+        # Create user
         adduser -D -u ${USER_ID} -G ${ACTUAL_GROUP} ${USERNAME}; \
+        ACTUAL_USER=${USERNAME}; \
         echo "Created user ${USERNAME} with UID ${USER_ID} in group ${ACTUAL_GROUP}"; \
-    fi
+    fi; \
+    \
+    # Store the actual username for later use
+    echo "export ACTUAL_USERNAME=${ACTUAL_USER}" > /etc/profile.d/docker-user.sh
 
 # Give user sudo access without password (for convenience)
-RUN echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} && \
-    chmod 0440 /etc/sudoers.d/${USERNAME}
+# Use 'node' as default since that's what exists in base image
+RUN SUDO_USER=$(getent passwd ${USER_ID} | cut -d: -f1) && \
+    echo "${SUDO_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${SUDO_USER} && \
+    chmod 0440 /etc/sudoers.d/${SUDO_USER}
 
 # Create workspace directory and set permissions
 WORKDIR /workspace
@@ -60,12 +75,21 @@ RUN chown -R ${USER_ID}:${GROUP_ID} /workspace
 RUN chmod -R a+rx /usr/local/lib/node_modules/@anthropic-ai
 
 # Create home directory for the user if it doesn't exist
-RUN mkdir -p /home/${USERNAME} && \
-    chown -R ${USER_ID}:${GROUP_ID} /home/${USERNAME}
+# Determine actual username and ensure home directory exists
+RUN ACTUAL_USER=$(getent passwd ${USER_ID} | cut -d: -f1) && \
+    mkdir -p /home/${ACTUAL_USER} && \
+    chown -R ${USER_ID}:${GROUP_ID} /home/${ACTUAL_USER}
 
-# Create .claude directory for settings
-RUN mkdir -p /home/${USERNAME}/.claude && \
-    chown -R ${USER_ID}:${GROUP_ID} /home/${USERNAME}/.claude
+# Create .claude directories for settings
+# - .claude: per-project settings (mounted as volume)
+# - .claude-shared: shared credentials across all projects (mounted as volume)
+RUN ACTUAL_USER=$(getent passwd ${USER_ID} | cut -d: -f1) && \
+    mkdir -p /home/${ACTUAL_USER}/.claude /home/${ACTUAL_USER}/.claude-shared && \
+    chown -R ${USER_ID}:${GROUP_ID} /home/${ACTUAL_USER}/.claude /home/${ACTUAL_USER}/.claude-shared
+
+# Add entrypoint script to manage credentials and settings
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Switch to non-root user (using numeric IDs for reliability)
 USER ${USER_ID}:${GROUP_ID}
@@ -75,6 +99,9 @@ SHELL ["/bin/bash", "-c"]
 
 # Verify installation
 RUN claude --version || echo "Claude Code installed, authentication needed on first run"
+
+# Set entrypoint to manage credentials symlink
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 # Default command: start interactive bash
 CMD ["/bin/bash"]

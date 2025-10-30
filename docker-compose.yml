@@ -10,30 +10,39 @@ services:
         # These are set in .env file (auto-detected by setup-and-run.sh)
         USER_ID: ${USER_ID:-1000}
         GROUP_ID: ${GROUP_ID:-1000}
-        USERNAME: ${USERNAME:-claudeuser}
-    container_name: claude-code-sandbox-${PROJECT_NAME:-default}
+        USERNAME: ${USERNAME:-node}
+    container_name: claude-code-${PROJECT_NAME:-default}
     
     # Interactive terminal
     stdin_open: true
     tty: true
     
     # Port forwarding for OAuth callback
-    # When you authenticate via browser on host, callback goes to localhost:8338
-    # which is forwarded to the container
+    # OAUTH_MODE controls port binding:
+    #   - With OAUTH_MODE=":8338" → binds to fixed port 8338:8338 (for OAuth setup)
+    #   - Without OAUTH_MODE (or empty) → binds to random host port (normal use, no conflicts)
+    #
+    # OAuth setup (initial authentication):
+    #   OAUTH_MODE=":8338" docker-compose up -d
+    # Normal use (after authentication, allows multiple projects):
+    #   docker-compose up -d
     ports:
-      - "8338:8338"
+      - "8338${OAUTH_MODE:-}"
     
     # Volume mounts
     volumes:
       # Mount your project directory (set in .env file)
       # Files created here will be owned by your host user (same UID/GID)
       - ${PROJECT_DIR}:/workspace
-      
-      # Persist Claude Code settings and OAuth tokens per-project
-      # Each project has isolated settings in its own subdirectory
-      # The volume name includes PROJECT_NAME for isolation
-      # Stored in: /home/claudeuser/.claude/<PROJECT_NAME>
-      - claude-settings:/home/${USERNAME:-claudeuser}/.claude/${PROJECT_NAME:-default}
+
+      # SHARED: OAuth credentials (authenticate once, use across all projects)
+      # All containers share the same credentials volume
+      - claude-credentials:/home/${USERNAME:-node}/.claude-shared
+
+      # PER-PROJECT: Settings, history, todos (isolated by PROJECT_NAME)
+      # Each project gets its own volume for project-specific data
+      # The entrypoint script creates a symlink from .claude/.credentials.json to .claude-shared/.credentials.json
+      - claude-settings:/home/${USERNAME:-node}/.claude
     
     working_dir: /workspace
     
@@ -54,7 +63,7 @@ services:
       
       # Set HOME to non-root user's home directory
       # This ensures Claude Code stores settings in the correct location
-      - HOME=/home/${USERNAME:-claudeuser}
+      - HOME=/home/${USERNAME:-node}
     
     # Security options
     security_opt:
@@ -74,10 +83,21 @@ services:
     # for complete network isolation (disables OAuth but maximum security)
     # network_mode: none
 
-# Named volume for persisting Claude Code settings
-# Per-project isolation is achieved through subdirectories within this volume
-# Each PROJECT_NAME gets its own subdirectory: /home/claudeuser/.claude/<PROJECT_NAME>
-# This allows multiple projects to maintain separate settings using a single volume
+# Named volumes for Claude Code data
+# Both volumes are marked as 'external' and must be created before docker-compose runs
+# The setup-and-run.sh script creates these volumes automatically
 volumes:
+  # Shared credentials volume (used by ALL projects)
+  # Stores OAuth tokens - authenticate once, use everywhere
+  # Created once: docker volume create claude-credentials
+  claude-credentials:
+    external: true
+    name: claude-credentials
+
+  # Per-project settings volume (isolated by PROJECT_NAME)
+  # Stores project-specific data: history, todos, session state
+  # Variable expansion in 'name' parameter creates: claude-settings-projectA, claude-settings-projectB, etc.
+  # The entrypoint script symlinks credentials from claude-credentials to each project's .claude directory
   claude-settings:
-    driver: local
+    external: true
+    name: claude-settings-${PROJECT_NAME:-default}

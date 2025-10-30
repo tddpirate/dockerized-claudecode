@@ -23,7 +23,7 @@ PROJECT_DIR=/path/to/your/project
 PROJECT_NAME=myproject
 USER_ID=1000
 GROUP_ID=1000
-USERNAME=claudeuser
+USERNAME=node
 ANTHROPIC_API_KEY=
 ANTHROPIC_MODEL=claude-sonnet-4-5-20250929
 ```
@@ -33,15 +33,20 @@ ANTHROPIC_MODEL=claude-sonnet-4-5-20250929
 ### Step 2: Start the Container
 
 ```bash
-# If using the setup script
+# If using the setup script (recommended)
 ./setup-and-run.sh
 
-# Or manually
-docker-compose up -d
+# Or manually for OAuth setup
+OAUTH_MODE=":8338" docker-compose up -d
 docker-compose exec claude-code bash
 ```
 
-You should now be inside the container as your user (matching your host UID/GID).
+**Important Notes:**
+- The setup script automatically starts the container in **OAuth mode** (port 8338:8338 exposed)
+- OAuth mode is only needed during initial authentication
+- After authentication completes, the setup script will offer to restart in **non-OAuth mode**
+- Non-OAuth mode uses a random host port, allowing multiple projects to run simultaneously without port conflicts
+- You should now be inside the container as your user (matching your host UID/GID)
 
 ### Step 3: Launch Claude Code for First Time
 
@@ -129,12 +134,32 @@ Ready to start coding. Type /help for available commands.
 
 ## 🎉 You're Done!
 
-Claude Code is now authenticated with your Pro/Max subscription. Your authentication token is **saved** in the project-specific Docker volume `claude-settings-<PROJECT_NAME>` at `/home/claudeuser/.claude/<PROJECT_NAME>/`, so you won't need to re-authenticate every time you use this project's container.
+Claude Code is now authenticated with your Pro/Max subscription. Your authentication token is **saved** in the shared `claude-credentials` Docker volume at `/home/node/.claude-shared/.credentials.json` and symlinked to `/home/node/.claude/.credentials.json`. You won't need to re-authenticate for any project using this Docker setup.
 
-**Note:** Each project has its own isolated settings. If you work on multiple projects, each can have:
-- Different Claude accounts (Pro/Max)
-- Different authentication tokens
-- Independent OAuth sessions
+### Switching to Non-OAuth Mode (Recommended)
+
+After completing authentication, **exit the container** (type `exit` or press Ctrl+D).
+
+The setup script will prompt you to restart the container in non-OAuth mode:
+
+```
+Do you want to restart the container in non-OAuth mode now? (Y/n):
+```
+
+**Press Y (recommended)** to:
+- ✅ Use a random host port instead of fixed port 8338
+- ✅ Allow multiple projects to run simultaneously without port conflicts
+- ✅ Maintain OAuth authentication (tokens are already saved)
+- ✅ No need to re-authenticate
+
+After restart, OAuth authentication continues to work normally - the port is only needed during the initial authentication flow.
+
+**Note:** OAuth credentials are shared across all projects via the `claude-credentials` volume. However, each project has its own settings volume (`claude-settings-${PROJECT_NAME}`) for:
+- Project-specific history and todos
+- Project-specific permissions
+- Independent session state
+
+All projects share the same OAuth authentication by default.
 
 ## 🔧 Troubleshooting
 
@@ -151,12 +176,13 @@ This is the standard workflow for Docker-based OAuth.
 
 **Check port forwarding:**
 
-1. Verify docker-compose.yml has port 8338 exposed:
+1. Verify the container is running in OAuth mode:
 ```bash
-cat docker-compose.yml | grep -A2 ports
-# Should show:
-# ports:
-#   - "8338:8338"
+# Container must be started with OAuth mode for initial authentication
+docker-compose down
+OAUTH_MODE=":8338" docker-compose up -d
+docker-compose exec claude-code bash
+claude
 ```
 
 2. Check if port is actually listening:
@@ -167,13 +193,15 @@ netstat -an | grep 8338
 lsof -i :8338
 ```
 
-3. Restart container if needed:
+3. Verify docker-compose.yml has the OAUTH_MODE port configuration:
 ```bash
-docker-compose down
-docker-compose up -d
-docker-compose exec claude-code bash
-claude
+cat docker-compose.yml | grep -A2 ports
+# Should show:
+# ports:
+#   - "8338${OAUTH_MODE:-}"
 ```
+
+**Note:** The setup script (`./setup-and-run.sh`) automatically handles OAuth mode. Use it for initial setup!
 
 ### "Authentication requires Claude Pro or Max subscription"
 
@@ -251,11 +279,26 @@ If your OAuth token expires or you want to switch accounts:
 ### Method 1: Clear Settings and Re-authenticate (Recommended)
 
 ```bash
-# Inside container
-rm -rf ~/.claude/$PROJECT_NAME
-# Or remove all settings: rm -rf ~/.claude
+# Step 1: Stop the container
+docker-compose down
+
+# Step 2: Start in OAuth mode (required for authentication)
+OAUTH_MODE=":8338" docker-compose up -d
+docker-compose exec claude-code bash
+
+# Step 3: Inside container - remove shared credentials (affects all projects)
+rm -f ~/.claude-shared/.credentials.json
+
+# Or remove this project's settings (keeps credentials)
+rm -rf ~/.claude/*
+
+# Step 4: Restart Claude Code and authenticate
 claude
 # Choose OAuth (option 2) again and follow the steps
+
+# Step 5: After authentication, exit container and restart in non-OAuth mode
+exit
+docker-compose down && docker-compose up -d
 ```
 
 This preserves the container and only clears Claude Code settings for this project.
@@ -265,22 +308,30 @@ This preserves the container and only clears Claude Code settings for this proje
 ```bash
 # On host machine (outside container)
 
-# Option A: Remove only this project's settings volume
-docker volume rm claude-code_claude-settings-${PROJECT_NAME}
-docker-compose up -d
+# Option A: Remove shared credentials (affects all projects)
+docker volume rm claude-credentials
+
+# Option B: Remove only this project's settings volume
+docker volume rm claude-settings-${PROJECT_NAME}
+
+# Option C: Remove both
+docker volume rm claude-credentials
+docker volume rm claude-settings-${PROJECT_NAME}
+
+# Then start in OAuth mode for re-authentication
+OAUTH_MODE=":8338" docker-compose up -d
 docker-compose exec claude-code bash
 
-# Option B: Remove ALL volumes (affects ALL projects)
-docker-compose down -v
-docker-compose up -d
-docker-compose exec claude-code bash
-
-# Then re-authenticate
+# Re-authenticate
 claude
 # Choose OAuth (option 2) again
+
+# After authentication, exit and restart in non-OAuth mode
+exit
+docker-compose down && docker-compose up -d
 ```
 
-**Warning:** Option B deletes **all** persisted settings for **all projects**, not just the current one.
+**Warning:** Removing `claude-credentials` affects **all projects**. Removing a specific `claude-settings-${PROJECT_NAME}` volume only affects that project's settings (history, todos, permissions).
 
 ## 🌐 Network Considerations
 
@@ -299,9 +350,16 @@ For OAuth to work, your `docker-compose.yml` must have:
 services:
   claude-code:
     ports:
-      - "8338:8338"  # Required for OAuth callback
+      - "8338${OAUTH_MODE:-}"  # OAuth mode controls port binding
     # network_mode: none  # Must be COMMENTED OUT for OAuth
 ```
+
+**Port binding modes:**
+- **OAuth mode** (during authentication): Start with `OAUTH_MODE=":8338" docker-compose up -d`
+  - Binds to fixed port 8338:8338 for OAuth callback
+- **Normal mode** (after authentication): Start with `docker-compose up -d`
+  - Uses random host port, allows multiple projects simultaneously
+  - OAuth authentication still works (tokens are saved)
 
 If you need maximum security with network isolation, you **must use an API key** instead of OAuth.
 
@@ -410,11 +468,12 @@ ls -la ~/.claude/
 
 ### Token Storage
 
-OAuth tokens are stored per-project in:
-- **Container location:** `/home/claudeuser/.claude/<PROJECT_NAME>/`
-- **Docker volume:** `claude-settings-<PROJECT_NAME>` (persistent across container restarts)
+OAuth tokens are stored in a shared volume accessible to all projects:
+- **Container location:** `/home/node/.claude-shared/.credentials.json` (actual storage)
+- **Symlinked to:** `/home/node/.claude/.credentials.json` (for each project)
+- **Docker volume:** `claude-credentials` (shared across all projects)
 - **Not visible on host:** Tokens stay inside the Docker volume for security
-- **Isolated per project:** Each PROJECT_NAME gets its own separate volume
+- **Shared by default:** All projects use the same OAuth credentials via the shared volume
 
 ### Token Lifecycle
 
@@ -425,61 +484,81 @@ OAuth tokens are stored per-project in:
 
 ### Best Practices
 
-1. **Don't share the claude-settings volume** between multiple users
-2. **Use separate accounts** if multiple developers need access
+1. **Don't share the claude-credentials volume** between multiple users
+2. **Use separate Docker hosts or credentials volumes** if multiple developers need different accounts
 3. **Revoke tokens** if you suspect compromise (via Claude account settings)
 4. **Re-authenticate** after changing your Claude password
+5. **All projects share credentials** - this is by design for convenience
 
 ## 🗂️ Multiple Projects and OAuth
 
-### Per-Project OAuth Tokens
+### Shared OAuth Credentials
 
-Each project (identified by PROJECT_NAME) has completely isolated OAuth settings:
+**Important:** All projects share the same OAuth credentials via the `claude-credentials` volume:
 
 ```bash
-# Project A - Work account
+# Project A
 PROJECT_NAME=client-work
-# Authenticates with work Claude Pro account
+# Volume: claude-settings-client-work (project-specific settings)
+# Credentials: Shared from claude-credentials volume
+# Location: /home/node/.claude/ → /home/node/.claude-shared/.credentials.json
 
-# Project B - Personal account  
+# Project B
 PROJECT_NAME=personal-project
-# Authenticates with personal Claude Max account
+# Volume: claude-settings-personal-project (project-specific settings)
+# Credentials: Shared from claude-credentials volume (same as Project A)
+# Location: /home/node/.claude/ → /home/node/.claude-shared/.credentials.json
 
-# Project C - Shared settings
-PROJECT_NAME=team-shared
-# Multiple projects using same PROJECT_NAME share OAuth tokens
+# All projects use the SAME OAuth credentials automatically
 ```
 
-### Benefits of Per-Project Isolation
+### Benefits of Current Architecture
 
-1. **Different accounts per project** - Use work account for work projects, personal for side projects
-2. **Independent authentication** - One project's OAuth doesn't affect others
+1. **Authenticate once, use everywhere** - Single OAuth login works for all projects
+2. **Per-project settings isolation** - Each project has its own history, todos, and permissions
 3. **Easy cleanup** - Remove settings for one project without affecting others
-4. **Flexible sharing** - Multiple projects can share settings by using same PROJECT_NAME
+4. **Shared credentials** - No need to re-authenticate when switching projects
+5. **Flexible settings sharing** - Multiple projects can share settings by using same PROJECT_NAME
 
-### Managing Multiple Project Authentications
+### Managing Volumes and Settings
 
-**List all Claude settings volumes:**
+**List Claude-related volumes:**
 ```bash
-docker volume ls | grep claude-settings
+docker volume ls | grep claude
 ```
 
 **Output example:**
 ```
-claude-code_claude-settings-client-work
-claude-code_claude-settings-personal-project
-claude-code_claude-settings-team-shared
+claude-credentials              (shared OAuth tokens)
+claude-settings-projectA        (project A settings)
+claude-settings-projectB        (project B settings)
+```
+
+**View shared credentials:**
+```bash
+# From host machine
+docker run --rm -v claude-credentials:/data alpine ls -la /data
+
+# Or from inside any container
+ls -la ~/.claude-shared/
 ```
 
 **Remove settings for specific project:**
 ```bash
-docker volume rm claude-code_claude-settings-projectname
+# From host machine
+docker volume rm claude-settings-<projectname>
+
+# Or from inside the container (clears content, keeps volume)
+rm -rf ~/.claude/*
 ```
 
-**Check which projects are authenticated:**
+**Remove shared credentials (affects all projects):**
 ```bash
-# Each volume represents an authenticated project
-docker volume ls --filter name=claude-settings
+# From host machine
+docker volume rm claude-credentials
+
+# Or from inside any container
+rm -f ~/.claude-shared/.credentials.json
 ```
 
 ### Switching Between Projects
@@ -489,8 +568,9 @@ When you switch projects (change PROJECT_NAME in .env):
 1. Stop current container: `docker-compose down`
 2. Update PROJECT_NAME in .env to different project
 3. Start new container: `docker-compose up -d`
-4. New container uses different volume = different OAuth token
-5. Authenticate if this project hasn't been authenticated yet
+4. New container mounts different settings volume (`claude-settings-${PROJECT_NAME}`)
+5. OAuth credentials are automatically available (shared via `claude-credentials` volume)
+6. No re-authentication needed - credentials are already there!
 
 **Example workflow:**
 ```bash
@@ -498,14 +578,17 @@ When you switch projects (change PROJECT_NAME in .env):
 echo "PROJECT_NAME=client-work" >> .env
 docker-compose up -d
 docker-compose exec claude-code bash
-claude  # Authenticate with work account
+claude  # Uses shared OAuth credentials (already authenticated)
 
 # Switch to personal project
 docker-compose down
 sed -i 's/PROJECT_NAME=.*/PROJECT_NAME=personal-project/' .env
 docker-compose up -d
 docker-compose exec claude-code bash
-claude  # Authenticate with personal account
+claude  # Uses same OAuth credentials (no re-authentication needed)
+
+# Note: Both projects use the same OAuth account
+# If you need different accounts, you need separate credential volumes
 ```
 
 ## 🔗 Additional Resources
@@ -533,34 +616,56 @@ When you start Claude Code, it will indicate whether you're using a subscription
 Claude Code will stop working and prompt you to re-authenticate. You'll need to either renew your subscription or switch to API key authentication.
 
 ### Can multiple containers share the same OAuth authentication?
-No. Each container has its own `claude-settings-<PROJECT_NAME>` volume. If you need multiple containers, you'll need to authenticate each one separately (or use the same PROJECT_NAME to share settings, but that's not recommended for isolation).
+**Yes, all containers automatically share the same OAuth credentials** via the `claude-credentials` volume. This is by design - authenticate once, use everywhere. Each PROJECT_NAME gets its own settings volume for history/todos/permissions, but credentials are shared.
 
 ### Can different projects use different Claude accounts?
-Yes! Each PROJECT_NAME gets its own OAuth token storage. Simply authenticate each project with the desired Claude account. For example:
-- `PROJECT_NAME=work-project` → Work Claude Pro account
-- `PROJECT_NAME=personal-stuff` → Personal Claude Max account
+**Not by default.** All projects share the same OAuth credentials via the `claude-credentials` volume. If you need different accounts for different projects, you would need to:
+1. Create separate credential volumes with different names
+2. Modify docker-compose.yml to use different credential volume names per project
+3. This is not the default configuration and requires manual setup
 
 ### What happens when I switch PROJECT_NAME in .env?
-The container will use a different Docker volume for settings. If it's a new project name, you'll need to authenticate again. If it's a previously used project name, it will reuse the existing OAuth token.
+The container will mount a different settings volume (`claude-settings-${NEW_PROJECT_NAME}`). OAuth credentials are automatically available via the shared `claude-credentials` volume, so no re-authentication is needed. Each project name gets its own settings (history, todos, permissions), but all share the same login.
 
-### Can I share OAuth authentication between projects?
-Yes! Just use the same PROJECT_NAME in the .env file for both projects. They'll share the same `claude-settings-<PROJECT_NAME>` volume and OAuth tokens.
+### Can I share settings between projects?
+**OAuth credentials are always shared** - that happens automatically via the `claude-credentials` volume. If you want to share settings (history, todos, permissions) between projects, use the same PROJECT_NAME in the .env file for both projects. They'll use the same `claude-settings-${PROJECT_NAME}` volume.
 
-### How do I see all my authenticated projects?
-Run: `docker volume ls | grep claude-settings` - each volume represents a project with saved OAuth tokens.
+### How do I see all my project volumes?
+Each project has its own settings volume. To see all volumes:
+
+```bash
+# From host machine
+docker volume ls | grep claude
+```
 
 Example output:
 ```
-claude-code_claude-settings-project1
-claude-code_claude-settings-project2
-claude-code_claude-settings-work
+claude-credentials              (shared OAuth for all projects)
+claude-settings-project1        (settings for project1)
+claude-settings-project2        (settings for project2)
+claude-settings-work            (settings for work)
 ```
 
-### How do I remove OAuth authentication for a specific project?
+All projects share `claude-credentials`, but each has its own settings volume.
+
+### How do I remove settings for a specific project?
 ```bash
-docker volume rm claude-code_claude-settings-<PROJECT_NAME>
+# Remove the settings volume for a specific project (from host)
+docker volume rm claude-settings-<PROJECT_NAME>
+
+# Or clear settings without removing volume (from inside container)
+rm -rf ~/.claude/*
 ```
-Replace `<PROJECT_NAME>` with your actual project name. This removes only that project's authentication without affecting others.
+Replace `<PROJECT_NAME>` with your actual project name. This removes only that project's settings. **Note:** OAuth credentials are shared, so this won't affect authentication - only project-specific history, todos, and permissions.
+
+### How do I remove OAuth authentication completely?
+```bash
+# Remove shared credentials (affects ALL projects)
+docker volume rm claude-credentials
+
+# Or from inside any container
+rm -f ~/.claude-shared/.credentials.json
+```
 
 ---
 
