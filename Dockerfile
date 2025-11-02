@@ -14,7 +14,8 @@ RUN apk update && apk add --no-cache \
     ca-certificates \
     tzdata \
     sudo \
-    shadow
+    shadow \
+    jq
 
 # Upgrade npm to latest version (optional, can be removed if causes issues)
 RUN npm install -g npm@latest
@@ -91,14 +92,27 @@ RUN ACTUAL_USER=$(getent passwd ${USER_ID} | cut -d: -f1) && \
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+# Add wrapper script for claude binary
+# This extracts user identity to shared storage after first authentication
+COPY claude-wrapper.sh /usr/local/bin/claude-wrapper.sh
+RUN chmod +x /usr/local/bin/claude-wrapper.sh
+
+# Rename real claude binary and replace with wrapper
+RUN mv /usr/local/bin/claude /usr/local/bin/claude-real && \
+    ln -s /usr/local/bin/claude-wrapper.sh /usr/local/bin/claude
+
 # Switch to non-root user (using numeric IDs for reliability)
 USER ${USER_ID}:${GROUP_ID}
 
 # Set bash as default shell
 SHELL ["/bin/bash", "-c"]
 
-# Verify installation
-RUN claude --version || echo "Claude Code installed, authentication needed on first run"
+# Verify installation (this will create .claude.json and possibly .claude-user.json)
+# We need to clean these up so they don't interfere with the real authentication flow
+RUN claude --version || echo "Claude Code installed, authentication needed on first run" && \
+    ACTUAL_USER=$(getent passwd ${USER_ID} | cut -d: -f1) && \
+    rm -f /home/${ACTUAL_USER}/.claude.json /home/${ACTUAL_USER}/.claude-shared/.claude-user.json && \
+    echo "✓ Cleaned up verification artifacts"
 
 # Set entrypoint to manage credentials symlink
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
